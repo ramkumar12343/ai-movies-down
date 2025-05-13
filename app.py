@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -142,8 +141,8 @@ def extract_magnet_links_with_size(forum_url):
 # /search API with improved error handling (using print instead of logger)
 
 RSS_FEEDS = [
-    "https://rss.app/feeds/mTrgM9OUGFEzKIw4.xml",
-    "https://rss.app/feeds/ufEFkg80GAlZF432.xml",
+    "https://rss.app/feeds/PCzrX4btEWL3jIoK.xml",
+    "https://rss.app/feeds/ePSqaPJZFEdBV8Hd.xml",
 ]
 
 # Function to fetch and combine data from multiple RSS feeds
@@ -251,6 +250,8 @@ async def search_movie(query: Query):
                 "success": False
             }
         )
+
+
 # Add these imports at the top of your file if not already present
 # Function to check account space
 def check_account_space(token):
@@ -580,10 +581,6 @@ async def delete_folder(folder_id: int):
 #         "note": "Top-rated movies feature coming soon!"
 #     }
 
-
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
 
 # Ensure app runs with Uvicorn on the correct port
 if __name__ == "__main__":
