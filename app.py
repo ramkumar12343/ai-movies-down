@@ -1,4 +1,3 @@
-from fastapi import FastAPI
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -15,7 +14,8 @@ import time
 import json
 import os
 import uvicorn
-
+import asyncio
+import urllib.parse
 
 # Replace with your Seedr credentials
 SEEDR_EMAIL = "artificialintelligenceee2025@gmail.com"
@@ -36,21 +36,23 @@ app.add_middleware(
 # Load sentence transformer model
 model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
-#
+# Global movie cache
 movie_cache = []
-
 
 # Input model
 class Query(BaseModel):
     query: str
 
-# Simpler version without logger dependency
-def extract_magnet_links_with_size(forum_url):
+# Extract magnet links with size info
+async def extract_magnet_links_with_size(forum_url):
     try:
-        response = requests.get(forum_url, timeout=10)  # Add timeout
+        response = await asyncio.to_thread(
+            lambda: requests.get(forum_url, timeout=10)
+        )
+        
         if response.status_code != 200:
             print(f"Failed to fetch URL: {forum_url}, status: {response.status_code}")
-            return []  # Return empty list instead of invalid placeholders
+            return []
 
         soup = BeautifulSoup(response.content, 'html.parser')
         links_with_size = []
@@ -65,7 +67,6 @@ def extract_magnet_links_with_size(forum_url):
                 if "&dn=" in href:
                     dn_part = href.split("&dn=")[1].split("&")[0]
                     # URL decode the dn parameter
-                    import urllib.parse
                     dn_decoded = urllib.parse.unquote(dn_part)
                     
                     # Look for specific size patterns in the filename
@@ -139,50 +140,70 @@ def extract_magnet_links_with_size(forum_url):
         print(f"Error extracting magnet links: {e}")
         return []  # Return empty list on error
 
-# /search API with improved error handling (using print instead of logger)
-
+# RSS feed URLs
 RSS_FEEDS = [
     "https://rss.app/feeds/PCzrX4btEWL3jIoK.xml",
     "https://rss.app/feeds/ePSqaPJZFEdBV8Hd.xml",
 ]
 
-# Function to fetch and combine data from multiple RSS feeds
-def fetch_movies_from_feeds():
-    movie_cache = []
+# Function to fetch and combine data from multiple RSS feeds - now asynchronous
+async def fetch_movies_from_feeds():
+    movies = []
     for rss_url in RSS_FEEDS:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            # Extract movie details
-            movie_data = {
-                "title": entry.title,
-                "summary": entry.summary,
-                "link": entry.link,
-                "image": None,  # Default to None
-                "rating": None  # Default to None
-            }
+        try:
+            # Use asyncio to make this non-blocking
+            feed_content = await asyncio.to_thread(
+                lambda: feedparser.parse(rss_url)
+            )
+            
+            for entry in feed_content.entries:
+                # Extract movie details
+                movie_data = {
+                    "title": entry.title,
+                    "summary": entry.summary,
+                    "link": entry.link,
+                    "image": None,  # Default to None
+                    "rating": None  # Default to None
+                }
 
-            # Extract image (check for <media:content> or <enclosure>)
-            if 'media_content' in entry:
-                # If media content is available, we might find an image here
-                movie_data['image'] = entry.media_content[0]['url']
-            elif 'enclosures' in entry:
-                # Sometimes, an image might be included in the enclosure tag
-                for enclosure in entry.enclosures:
-                    if enclosure.type.startswith('image'):
-                        movie_data['image'] = enclosure.href
+                # Extract image (check for <media:content> or <enclosure>)
+                if 'media_content' in entry:
+                    # If media content is available, we might find an image here
+                    movie_data['image'] = entry.media_content[0]['url']
+                elif 'enclosures' in entry:
+                    # Sometimes, an image might be included in the enclosure tag
+                    for enclosure in entry.enclosures:
+                        if enclosure.type.startswith('image'):
+                            movie_data['image'] = enclosure.href
 
-            # Extract rating (if available)
-            if 'rating' in entry:
-                movie_data['rating'] = entry.rating  # Example: might be in <rating> tag
+                # Extract rating (if available)
+                if 'rating' in entry:
+                    movie_data['rating'] = entry.rating  # Example: might be in <rating> tag
 
-            movie_cache.append(movie_data)
-    return movie_cache
+                movies.append(movie_data)
+        except Exception as e:
+            print(f"Error fetching feed {rss_url}: {e}")
+            continue
+    
+    return movies
+
+# Initialize movie cache on startup
+@app.on_event("startup")
+async def startup_event():
+    global movie_cache
+    try:
+        movie_cache = await fetch_movies_from_feeds()
+        print(f"Loaded {len(movie_cache)} movies into cache")
+    except Exception as e:
+        print(f"Error initializing movie cache: {e}")
 
 @app.post("/search")
 async def search_movie(query: Query):
     try:
-        # Fetch the movies from the combined RSS feeds
-        movie_cache = fetch_movies_from_feeds()
+        # Use global cache or refresh if empty
+        global movie_cache
+        if not movie_cache:
+            movie_cache = await fetch_movies_from_feeds()
 
         if not query.query:
             return JSONResponse(
@@ -197,7 +218,7 @@ async def search_movie(query: Query):
             )
 
         movie_texts = [m["title"] + " " + m["summary"] for m in movie_cache]
-        movie_vectors = model.encode(movie_texts)  # Ensure your model is defined
+        movie_vectors = model.encode(movie_texts)
         query_vector = model.encode([query.query])
 
         # Compute cosine similarity
@@ -217,7 +238,7 @@ async def search_movie(query: Query):
             )
 
         # Get magnet links with size
-        files = extract_magnet_links_with_size(match["link"])
+        files = await extract_magnet_links_with_size(match["link"])
 
         # Return response with valid files or no files found
         if not files:
@@ -247,7 +268,7 @@ async def search_movie(query: Query):
         return JSONResponse(
             status_code=500,
             content={
-                "error": "Server error while processing request",
+                "error": f"Server error while processing request: {str(e)}",
                 "success": False
             }
         )
@@ -583,6 +604,14 @@ async def delete_folder(folder_id: int):
 #     }
 
 
-# Ensure app runs with Uvicorn on the correct port
+# Add a simple health check endpoint
+@app.get("/")
+async def root():
+    return {"status": "online", "movie_count": len(movie_cache)}
+
+# Ensure app runs with Uvicorn on the correct port for Render
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Get port from environment or default to 8000
+    port = int(os.environ.get("PORT", 8000))
+    print(f"Starting server on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
